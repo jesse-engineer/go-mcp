@@ -11,24 +11,6 @@ import (
 	"github.com/ThinkInAIXYZ/go-mcp/protocol"
 )
 
-func (server *Server) ping(ctx context.Context) error {
-	sessionID, exist := getSessionIDFromCtx(ctx)
-	if !exist {
-		return pkg.ErrLackSession
-	}
-
-	response, err := server.callClient(ctx, sessionID, protocol.Ping, protocol.NewPingRequest())
-	if err != nil {
-		return err
-	}
-
-	var result protocol.PingResult
-	if err := pkg.JsonUnmarshal(response, &result); err != nil {
-		return fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-	return nil
-}
-
 func (server *Server) sendNotification4ToolListChanges(ctx context.Context) error {
 	if server.capabilities.Tools == nil || !server.capabilities.Tools.ListChanged {
 		return pkg.ErrServerNotSupport

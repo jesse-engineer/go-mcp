@@ -12,8 +12,6 @@ import (
 )
 
 func (server *Server) Receive(ctx context.Context, sessionID string, msg []byte) error {
-	ctx = setSessionIDToCtx(ctx, sessionID)
-
 	if !gjson.GetBytes(msg, "id").Exists() {
 		notify := &protocol.JSONRPCNotification{}
 		if err := pkg.JsonUnmarshal(msg, &notify); err != nil {
@@ -69,7 +67,7 @@ func (server *Server) Receive(ctx context.Context, sessionID string, msg []byte)
 		defer pkg.Recover()
 		defer server.inFlyRequest.Done()
 
-		if err := server.receiveRequest(ctx, sessionID, req); err != nil {
+		if err := server.receiveRequest(sessionID, req); err != nil {
 			server.logger.Errorf("receive request:%+v error: %s", req, err.Error())
 			return
 		}
@@ -78,7 +76,7 @@ func (server *Server) Receive(ctx context.Context, sessionID string, msg []byte)
 	return nil
 }
 
-func (server *Server) receiveRequest(ctx context.Context, sessionID string, request *protocol.JSONRPCRequest) error {
+func (server *Server) receiveRequest(sessionID string, request *protocol.JSONRPCRequest) error {
 	if request.Method != protocol.Initialize && request.Method != protocol.Ping {
 		if s, ok := server.sessionID2session.Load(sessionID); !ok {
 			return pkg.ErrLackSession
@@ -118,6 +116,8 @@ func (server *Server) receiveRequest(ctx context.Context, sessionID string, requ
 	default:
 		err = fmt.Errorf("%w: method=%s", pkg.ErrMethodNotSupport, request.Method)
 	}
+
+	ctx := context.Background()
 
 	if err != nil {
 		if errors.Is(err, pkg.ErrMethodNotSupport) {
