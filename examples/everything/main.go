@@ -146,7 +146,7 @@ func deleteFile(ctx context.Context, request *protocol.CallToolRequest) (*protoc
 }
 
 func requestConfirm(ctx context.Context) error {
-	resp, err := srv.Sampling(ctx, &protocol.CreateMessageRequest{
+	resp, err := server.Sampling(ctx, &protocol.CreateMessageRequest{
 		Messages: []protocol.SamplingMessage{
 			{
 				Role: "user",

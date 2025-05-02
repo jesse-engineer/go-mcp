@@ -233,7 +233,7 @@ func (server *Server) Shutdown(userCtx context.Context) error {
 	return server.transport.Shutdown(userCtx, serverCtx)
 }
 
-func (server *Server) sessionDetection(ctx context.Context, sessionID string) error {
+func (server *Server) sessionDetection(ctx context.Context, session *session.State) error {
 	if server.inShutdown.Load() {
 		return nil
 	}
@@ -241,7 +241,7 @@ func (server *Server) sessionDetection(ctx context.Context, sessionID string) er
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	if _, err := server.Ping(setSessionIDToCtx(ctx, sessionID), protocol.NewPingRequest()); err != nil {
+	if _, err := Ping(setSessionToCtx(ctx, session), protocol.NewPingRequest()); err != nil {
 		return err
 	}
 	return nil

@@ -2,22 +2,20 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strconv"
 
 	"github.com/ThinkInAIXYZ/go-mcp/pkg"
 	"github.com/ThinkInAIXYZ/go-mcp/protocol"
 	"github.com/ThinkInAIXYZ/go-mcp/server/session"
 )
 
-func (server *Server) Ping(ctx context.Context, request *protocol.PingRequest) (*protocol.PingResult, error) {
-	sessionID, err := getSessionIDFromCtx(ctx)
+func Ping(ctx context.Context, request *protocol.PingRequest) (*protocol.PingResult, error) {
+	session, err := getSessionFromCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	response, err := server.callClient(ctx, sessionID, protocol.Ping, request)
+	response, err := session.CallClient(ctx, protocol.Ping, request)
 	if err != nil {
 		return nil, err
 	}
@@ -29,22 +27,17 @@ func (server *Server) Ping(ctx context.Context, request *protocol.PingRequest) (
 	return &result, nil
 }
 
-func (server *Server) Sampling(ctx context.Context, request *protocol.CreateMessageRequest) (*protocol.CreateMessageResult, error) {
-	sessionID, err := getSessionIDFromCtx(ctx)
+func Sampling(ctx context.Context, request *protocol.CreateMessageRequest) (*protocol.CreateMessageResult, error) {
+	session, err := getSessionFromCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	s, ok := server.sessionManager.GetSession(sessionID)
-	if !ok {
-		return nil, pkg.ErrLackSession
-	}
-
-	if s.GetClientCapabilities() == nil || s.GetClientCapabilities().Sampling == nil {
+	if session.GetClientCapabilities() == nil || session.GetClientCapabilities().Sampling == nil {
 		return nil, pkg.ErrServerNotSupport
 	}
 
-	response, err := server.callClient(ctx, sessionID, protocol.SamplingCreateMessage, request)
+	response, err := session.CallClient(ctx, protocol.SamplingCreateMessage, request)
 	if err != nil {
 		return nil, err
 	}
@@ -62,8 +55,8 @@ func (server *Server) sendNotification4ToolListChanges(ctx context.Context) erro
 	}
 
 	var errList []error
-	server.sessionManager.RangeSessions(func(sessionID string, _ *session.State) bool {
-		if err := server.sendMsgWithNotification(ctx, sessionID, protocol.NotificationToolsListChanged, protocol.NewToolListChangedNotification()); err != nil {
+	server.sessionManager.RangeSessions(func(sessionID string, session *session.State) bool {
+		if err := session.SendMsgWithNotification(ctx, protocol.NotificationToolsListChanged, protocol.NewToolListChangedNotification()); err != nil {
 			errList = append(errList, fmt.Errorf("sessionID=%s, err: %w", sessionID, err))
 		}
 		return true
@@ -77,8 +70,8 @@ func (server *Server) sendNotification4PromptListChanges(ctx context.Context) er
 	}
 
 	var errList []error
-	server.sessionManager.RangeSessions(func(sessionID string, _ *session.State) bool {
-		if err := server.sendMsgWithNotification(ctx, sessionID, protocol.NotificationPromptsListChanged, protocol.NewPromptListChangedNotification()); err != nil {
+	server.sessionManager.RangeSessions(func(sessionID string, session *session.State) bool {
+		if err := session.SendMsgWithNotification(ctx, protocol.NotificationPromptsListChanged, protocol.NewPromptListChangedNotification()); err != nil {
 			errList = append(errList, fmt.Errorf("sessionID=%s, err: %w", sessionID, err))
 		}
 		return true
@@ -92,8 +85,8 @@ func (server *Server) sendNotification4ResourceListChanges(ctx context.Context) 
 	}
 
 	var errList []error
-	server.sessionManager.RangeSessions(func(sessionID string, _ *session.State) bool {
-		if err := server.sendMsgWithNotification(ctx, sessionID, protocol.NotificationResourcesListChanged,
+	server.sessionManager.RangeSessions(func(sessionID string, session *session.State) bool {
+		if err := session.SendMsgWithNotification(ctx, protocol.NotificationResourcesListChanged,
 			protocol.NewResourceListChangedNotification()); err != nil {
 			errList = append(errList, fmt.Errorf("sessionID=%s, err: %w", sessionID, err))
 		}
@@ -108,42 +101,15 @@ func (server *Server) SendNotification4ResourcesUpdated(ctx context.Context, not
 	}
 
 	var errList []error
-	server.sessionManager.RangeSessions(func(sessionID string, s *session.State) bool {
-		if _, ok := s.GetSubscribedResources().Get(notify.URI); !ok {
+	server.sessionManager.RangeSessions(func(sessionID string, session *session.State) bool {
+		if _, ok := session.GetSubscribedResources().Get(notify.URI); !ok {
 			return true
 		}
 
-		if err := server.sendMsgWithNotification(ctx, sessionID, protocol.NotificationResourcesUpdated, notify); err != nil {
+		if err := session.SendMsgWithNotification(ctx, protocol.NotificationResourcesUpdated, notify); err != nil {
 			errList = append(errList, fmt.Errorf("sessionID=%s, err: %w", sessionID, err))
 		}
 		return true
 	})
 	return pkg.JoinErrors(errList)
-}
-
-// Responsible for request and response assembly
-func (server *Server) callClient(ctx context.Context, sessionID string, method protocol.Method, params protocol.ServerRequest) (json.RawMessage, error) {
-	session, ok := server.sessionManager.GetSession(sessionID)
-	if !ok {
-		return nil, fmt.Errorf("callClient: %w", pkg.ErrLackSession)
-	}
-
-	requestID := strconv.FormatInt(session.IncRequestID(), 10)
-	respChan := make(chan *protocol.JSONRPCResponse, 1)
-	session.GetReqID2respChan().Set(requestID, respChan)
-	defer session.GetReqID2respChan().Remove(requestID)
-
-	if err := server.sendMsgWithRequest(ctx, sessionID, requestID, method, params); err != nil {
-		return nil, fmt.Errorf("callClient: %w", err)
-	}
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case response := <-respChan:
-		if err := response.Error; err != nil {
-			return nil, pkg.NewResponseError(err.Code, err.Message, err.Data)
-		}
-		return response.RawResult, nil
-	}
 }

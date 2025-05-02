@@ -111,32 +111,9 @@ func (t *stdioServerTransport) startReceive(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
-			t.receive(ctx, line)
+			if err = t.receiver.Receive(ctx, t.sessionID, line); err != nil {
+				t.logger.Errorf("receiver failed: %v", err)
+			}
 		}
 	}
-}
-
-func (t *stdioServerTransport) receive(ctx context.Context, line []byte) {
-	outputMsgCh, err := t.receiver.Receive(ctx, t.sessionID, line)
-	if err != nil {
-		t.logger.Errorf("receiver failed: %v", err)
-		return
-	}
-
-	if outputMsgCh == nil {
-		return
-	}
-
-	go func() {
-		defer pkg.Recover()
-
-		msg := <-outputMsgCh
-		if len(msg) == 0 {
-			t.logger.Errorf("handle request fail")
-			return
-		}
-		if err := t.Send(context.Background(), t.sessionID, msg); err != nil {
-			t.logger.Errorf("Failed to send message: %v", err)
-		}
-	}()
 }

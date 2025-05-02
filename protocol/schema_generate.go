@@ -180,6 +180,11 @@ func reflectSchemaByType(t reflect.Type) (*Property, error) {
 		}
 		object.Type = ObjectT
 		s = object
+	case reflect.Map:
+		if t.Key().Kind() != reflect.String {
+			return nil, fmt.Errorf("map key type %s is not supported", t.Key().Kind())
+		}
+		s.Type = ObjectT
 	case reflect.Ptr:
 		p, err := reflectSchemaByType(t.Elem())
 		if err != nil {
@@ -187,7 +192,7 @@ func reflectSchemaByType(t reflect.Type) (*Property, error) {
 		}
 		s = p
 	case reflect.Invalid, reflect.Uintptr, reflect.Complex64, reflect.Complex128,
-		reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
+		reflect.Chan, reflect.Func, reflect.Interface,
 		reflect.UnsafePointer:
 		return nil, fmt.Errorf("unsupported type: %s", t.Kind().String())
 	default:

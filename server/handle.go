@@ -38,7 +38,7 @@ func (server *Server) handleRequestWithInitialize(ctx context.Context, sessionID
 			return nil, pkg.ErrLackSession
 		}
 		s.SetClientInfo(&request.ClientInfo, &request.Capabilities)
-		s.SetReceivedInitRequest()
+		s.SetReceivedInitRequest(server.transport)
 	}
 
 	return &protocol.InitializeResult{
@@ -242,30 +242,6 @@ func (server *Server) handleRequestWithCallTool(ctx context.Context, rawParams j
 	}
 
 	return entry.handler(ctx, request)
-}
-
-func (server *Server) handleNotifyWithInitialized(sessionID string, rawParams json.RawMessage) error {
-	if sessionID == "" {
-		return nil
-	}
-
-	param := &protocol.InitializedNotification{}
-	if len(rawParams) > 0 {
-		if err := pkg.JSONUnmarshal(rawParams, param); err != nil {
-			return err
-		}
-	}
-
-	s, ok := server.sessionManager.GetSession(sessionID)
-	if !ok {
-		return pkg.ErrLackSession
-	}
-
-	if !s.GetReceivedInitRequest() {
-		return fmt.Errorf("the server has not received the client's initialization request")
-	}
-	s.SetReady()
-	return nil
 }
 
 func matchesTemplate(uri string, template *uritemplate.Template) bool {

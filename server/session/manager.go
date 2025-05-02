@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,11 +18,11 @@ type Manager struct {
 
 	logger pkg.Logger
 
-	detection   func(ctx context.Context, sessionID string) error
+	detection   func(ctx context.Context, session *State) error
 	maxIdleTime time.Duration
 }
 
-func NewManager(detection func(ctx context.Context, sessionID string) error) *Manager {
+func NewManager(detection func(ctx context.Context, session *State) error) *Manager {
 	return &Manager{
 		detection:     detection,
 		stopHeartbeat: make(chan struct{}),
@@ -39,30 +40,33 @@ func (m *Manager) SetLogger(logger pkg.Logger) {
 
 func (m *Manager) CreateSession() string {
 	sessionID := uuid.NewString()
-	state := NewState()
+	state := NewState(sessionID)
 	m.activeSessions.Store(sessionID, state)
 	return sessionID
 }
 
-func (m *Manager) IsActiveSession(sessionID string) bool {
-	_, has := m.activeSessions.Load(sessionID)
-	return has
-}
-
-func (m *Manager) IsClosedSession(sessionID string) bool {
-	_, has := m.closedSessions.Load(sessionID)
-	return has
-}
-
 func (m *Manager) GetSession(sessionID string) (*State, bool) {
+	s, err := m.GetSessionWithErr(sessionID)
+	if err != nil {
+		return nil, false
+	}
+	return s, true
+}
+
+func (m *Manager) GetSessionWithErr(sessionID string) (*State, error) {
 	if sessionID == "" {
-		return nil, false
+		return nil, errors.New("sessionID can't is nil")
 	}
-	state, has := m.activeSessions.Load(sessionID)
+
+	s, has := m.activeSessions.Load(sessionID)
 	if !has {
-		return nil, false
+		if _, has = m.closedSessions.Load(sessionID); has {
+			return nil, pkg.ErrSessionClosed
+		}
+		return nil, pkg.ErrLackSession
+
 	}
-	return state, true
+	return s, nil
 }
 
 func (m *Manager) OpenMessageQueueForSend(sessionID string) error {
@@ -103,7 +107,7 @@ func (m *Manager) CloseSession(sessionID string) {
 	if !ok {
 		return
 	}
-	state.Close()
+	state.close()
 	m.closedSessions.Store(sessionID, struct{}{})
 }
 
@@ -134,7 +138,7 @@ func (m *Manager) StartHeartbeatAndCleanInvalidSessions() {
 
 				var err error
 				for i := 0; i < 3; i++ {
-					if err = m.detection(context.Background(), sessionID); err == nil {
+					if err = m.detection(context.Background(), state); err == nil {
 						return true
 					}
 				}

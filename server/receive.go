@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -12,55 +11,56 @@ import (
 	"github.com/ThinkInAIXYZ/go-mcp/protocol"
 )
 
-func (server *Server) receive(ctx context.Context, sessionID string, msg []byte) (<-chan []byte, error) {
-	if sessionID != "" && !server.sessionManager.IsActiveSession(sessionID) {
-		if server.sessionManager.IsClosedSession(sessionID) {
-			return nil, pkg.ErrSessionClosed
-		}
-		return nil, pkg.ErrLackSession
-	}
-
+func (server *Server) receive(ctx context.Context, sessionID string, msg []byte) error {
 	if !gjson.GetBytes(msg, "id").Exists() {
 		notify := &protocol.JSONRPCNotification{}
 		if err := pkg.JSONUnmarshal(msg, &notify); err != nil {
-			return nil, err
+			return err
 		}
-		if err := server.receiveNotify(sessionID, notify); err != nil {
+		s, err := server.sessionManager.GetSessionWithErr(sessionID)
+		if err != nil {
+			return err
+		}
+		if err = s.ReceiveNotify(notify); err != nil {
 			notify.RawParams = nil // simplified log
 			server.logger.Errorf("receive notify:%+v error: %s", notify, err.Error())
-			return nil, err
+			return err
 		}
-		return nil, nil
+		return nil
 	}
 
 	// case request or response
 	if !gjson.GetBytes(msg, "method").Exists() {
 		resp := &protocol.JSONRPCResponse{}
 		if err := pkg.JSONUnmarshal(msg, &resp); err != nil {
-			return nil, err
+			return err
 		}
 
-		if err := server.receiveResponse(sessionID, resp); err != nil {
+		s, err := server.sessionManager.GetSessionWithErr(sessionID)
+		if err != nil {
+			return err
+		}
+		if err = s.ReceiveResponse(resp); err != nil {
 			resp.RawResult = nil // simplified log
 			server.logger.Errorf("receive response:%+v error: %s", resp, err.Error())
-			return nil, err
+			return err
 		}
-		return nil, nil
+		return nil
 	}
 
 	req := &protocol.JSONRPCRequest{}
 	if err := pkg.JSONUnmarshal(msg, &req); err != nil {
-		return nil, err
+		return err
 	}
 	if !req.IsValid() {
-		return nil, pkg.ErrRequestInvalid
+		return pkg.ErrRequestInvalid
 	}
 
 	if sessionID != "" && req.Method != protocol.Initialize && req.Method != protocol.Ping {
 		if s, ok := server.sessionManager.GetSession(sessionID); !ok {
-			return nil, pkg.ErrLackSession
+			return pkg.ErrLackSession
 		} else if !s.GetReady() {
-			return nil, pkg.ErrSessionHasNotInitialized
+			return pkg.ErrSessionHasNotInitialized
 		}
 	}
 
@@ -68,7 +68,7 @@ func (server *Server) receive(ctx context.Context, sessionID string, msg []byte)
 
 	if server.inShutdown.Load() {
 		server.inFlyRequest.Done()
-		return nil, errors.New("server already shutdown")
+		return errors.New("server already shutdown")
 	}
 
 	ch := make(chan []byte, 1)
@@ -77,19 +77,20 @@ func (server *Server) receive(ctx context.Context, sessionID string, msg []byte)
 		defer server.inFlyRequest.Done()
 		defer close(ch)
 
-		resp := server.receiveRequest(ctx, sessionID, req)
-		message, err := json.Marshal(resp)
-		if err != nil {
-			server.logger.Errorf("receive json marshal response:%+v error: %s", resp, err.Error())
+		if err := server.receiveRequest(ctx, sessionID, req); err != nil {
+			req.RawParams = nil
+			server.logger.Errorf("receive request:%+v error: %s", req, err.Error())
 			return
 		}
-		ch <- message
+
 	}(pkg.NewCancelShieldContext(ctx))
-	return ch, nil
+	return nil
 }
 
-func (server *Server) receiveRequest(ctx context.Context, sessionID string, request *protocol.JSONRPCRequest) *protocol.JSONRPCResponse {
-	ctx = setSessionIDToCtx(ctx, sessionID)
+func (server *Server) receiveRequest(ctx context.Context, sessionID string, request *protocol.JSONRPCRequest) error {
+	if s, ok := server.sessionManager.GetSession(sessionID); ok {
+		ctx = setSessionToCtx(ctx, s)
+	}
 
 	if request.Method != protocol.Ping {
 		server.sessionManager.UpdateSessionLastActiveAt(sessionID)
@@ -127,6 +128,7 @@ func (server *Server) receiveRequest(ctx context.Context, sessionID string, requ
 		err = fmt.Errorf("%w: method=%s", pkg.ErrMethodNotSupport, request.Method)
 	}
 
+	var resp *protocol.JSONRPCResponse
 	if err != nil {
 		var code int
 		switch {
@@ -139,43 +141,17 @@ func (server *Server) receiveRequest(ctx context.Context, sessionID string, requ
 		default:
 			code = protocol.InternalError
 		}
-		return protocol.NewJSONRPCErrorResponse(request.ID, code, err.Error())
-	}
-	return protocol.NewJSONRPCSuccessResponse(request.ID, result)
-}
-
-func (server *Server) receiveNotify(sessionID string, notify *protocol.JSONRPCNotification) error {
-	if sessionID != "" {
-		if s, ok := server.sessionManager.GetSession(sessionID); !ok {
-			return pkg.ErrLackSession
-		} else if notify.Method != protocol.NotificationInitialized && !s.GetReady() {
-			return pkg.ErrSessionHasNotInitialized
-		}
+		resp = protocol.NewJSONRPCErrorResponse(request.ID, code, err.Error())
+	} else {
+		resp = protocol.NewJSONRPCSuccessResponse(request.ID, result)
 	}
 
-	switch notify.Method {
-	case protocol.NotificationInitialized:
-		return server.handleNotifyWithInitialized(sessionID, notify.RawParams)
-	default:
-		return fmt.Errorf("%w: method=%s", pkg.ErrMethodNotSupport, notify.Method)
+	s, err := server.sessionManager.GetSessionWithErr(sessionID)
+	if err != nil {
+		return err
 	}
-}
-
-func (server *Server) receiveResponse(sessionID string, response *protocol.JSONRPCResponse) error {
-	s, ok := server.sessionManager.GetSession(sessionID)
-	if !ok {
-		return pkg.ErrLackSession
-	}
-
-	respChan, ok := s.GetReqID2respChan().Get(fmt.Sprint(response.ID))
-	if !ok {
-		return fmt.Errorf("%w: sessionID=%+v, requestID=%+v", pkg.ErrLackResponseChan, sessionID, response.ID)
-	}
-
-	select {
-	case respChan <- response:
-	default:
-		return fmt.Errorf("%w: sessionID=%+v, response=%+v", pkg.ErrDuplicateResponseReceived, sessionID, response)
+	if err = s.SendMsgWithResponse(ctx, resp); err != nil {
+		return err
 	}
 	return nil
 }

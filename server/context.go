@@ -3,18 +3,20 @@ package server
 import (
 	"context"
 	"errors"
+
+	"github.com/ThinkInAIXYZ/go-mcp/server/session"
 )
 
-type sessionIDKey struct{}
+type sessionKey struct{}
 
-func setSessionIDToCtx(ctx context.Context, sessionID string) context.Context {
-	return context.WithValue(ctx, sessionIDKey{}, sessionID)
+func setSessionToCtx(ctx context.Context, session *session.State) context.Context {
+	return context.WithValue(ctx, sessionKey{}, session)
 }
 
-func getSessionIDFromCtx(ctx context.Context) (string, error) {
-	sessionID := ctx.Value(sessionIDKey{})
-	if sessionID == nil {
-		return "", errors.New("no session id found")
+func getSessionFromCtx(ctx context.Context) (*session.State, error) {
+	s := ctx.Value(sessionKey{})
+	if s == nil {
+		return nil, errors.New("no session found")
 	}
-	return sessionID.(string), nil
+	return s.(*session.State), nil
 }

@@ -216,13 +216,15 @@ func (t *streamableHTTPServerTransport) handlePost(w http.ResponseWriter, r *htt
 	// To cancel, the client SHOULD explicitly send an MCP CancelledNotification.
 	ctx := pkg.NewCancelShieldContext(r.Context())
 
-	// For InitializeRequest HTTP response
+	sessionID := r.Header.Get(sessionIDHeader)
 	if t.stateMode == Stateful {
+		// For InitializeRequest HTTP response
 		ctx = context.WithValue(ctx, SessionIDForReturnKey{}, &SessionIDForReturn{})
+	} else {
+		sessionID = t.sessionManager.CreateSession()
 	}
 
-	outputMsgCh, err := t.receiver.Receive(ctx, r.Header.Get(sessionIDHeader), bs)
-	if err != nil {
+	if err = t.receiver.Receive(ctx, sessionID, bs); err != nil {
 		if errors.Is(err, pkg.ErrSessionClosed) {
 			t.writeError(w, http.StatusNotFound, fmt.Sprintf("Failed to receive: %v", err))
 			return
@@ -247,7 +249,10 @@ func (t *streamableHTTPServerTransport) handlePost(w http.ResponseWriter, r *htt
 		if sid := ctx.Value(SessionIDForReturnKey{}).(*SessionIDForReturn); sid.SessionID != "" { // in server.handleRequestWithInitialize assign
 			w.Header().Set(sessionIDHeader, sid.SessionID)
 		}
+	} else {
+		t.sessionManager.CloseSession(sessionID)
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 

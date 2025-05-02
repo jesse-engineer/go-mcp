@@ -67,12 +67,12 @@ type ServerTransport interface {
 }
 
 type serverReceiver interface {
-	Receive(ctx context.Context, sessionID string, msg []byte) (<-chan []byte, error)
+	Receive(ctx context.Context, sessionID string, msg []byte) error
 }
 
-type ServerReceiverF func(ctx context.Context, sessionID string, msg []byte) (<-chan []byte, error)
+type ServerReceiverF func(ctx context.Context, sessionID string, msg []byte) error
 
-func (f ServerReceiverF) Receive(ctx context.Context, sessionID string, msg []byte) (<-chan []byte, error) {
+func (f ServerReceiverF) Receive(ctx context.Context, sessionID string, msg []byte) error {
 	return f(ctx, sessionID, msg)
 }
 

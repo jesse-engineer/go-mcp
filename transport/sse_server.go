@@ -280,31 +280,13 @@ func (t *sseServerTransport) handleMessage(w http.ResponseWriter, r *http.Reques
 	}
 
 	ctx := pkg.NewCancelShieldContext(r.Context())
-	outputMsgCh, err := t.receiver.Receive(ctx, sessionID, inputMsg)
-	if err != nil {
+	if err = t.receiver.Receive(ctx, sessionID, inputMsg); err != nil {
 		t.writeError(w, http.StatusBadRequest, fmt.Sprintf("Failed to receive: %v", err))
 		return
 	}
 
 	t.logger.Debugf("Received message: %s", string(inputMsg))
 	w.WriteHeader(http.StatusAccepted)
-
-	if outputMsgCh == nil {
-		return
-	}
-
-	go func() {
-		defer pkg.Recover()
-
-		msg := <-outputMsgCh
-		if len(msg) == 0 {
-			t.logger.Errorf("handle request fail")
-			return
-		}
-		if err := t.Send(context.Background(), sessionID, msg); err != nil {
-			t.logger.Errorf("Failed to send message: %v", err)
-		}
-	}()
 }
 
 // writeError writes a JSON-RPC error response with the given error details.
