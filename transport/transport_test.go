@@ -25,7 +25,7 @@ func (m *mockSessionManager) CreateSession() string {
 	return sessionID
 }
 
-func (m *mockSessionManager) OpenMessageQueueForSend(sessionID string) error {
+func (m *mockSessionManager) OpenMessageQueueForSend(sessionID string, streamID string) error {
 	_, ok := m.Load(sessionID)
 	if !ok {
 		return pkg.ErrLackSession
@@ -39,7 +39,7 @@ func (m *mockSessionManager) IsExistSession(sessionID string) bool {
 	return has
 }
 
-func (m *mockSessionManager) EnqueueMessageForSend(ctx context.Context, sessionID string, message []byte) error {
+func (m *mockSessionManager) EnqueueMessageForSend(ctx context.Context, sessionID string, streamID string, message []byte) error {
 	ch, has := m.Load(sessionID)
 	if !has {
 		return pkg.ErrLackSession
@@ -53,7 +53,7 @@ func (m *mockSessionManager) EnqueueMessageForSend(ctx context.Context, sessionI
 	}
 }
 
-func (m *mockSessionManager) DequeueMessageForSend(ctx context.Context, sessionID string) ([]byte, error) {
+func (m *mockSessionManager) DequeueMessageForSend(ctx context.Context, sessionID string, id string) ([]byte, error) {
 	ch, has := m.Load(sessionID)
 	if !has {
 		return nil, pkg.ErrLackSession
@@ -90,13 +90,9 @@ func (m *mockSessionManager) CloseAllSessions() {
 func testTransport(t *testing.T, client ClientTransport, server ServerTransport) {
 	testMsg := "hello server"
 	expectedMsgWithServerCh := make(chan string, 1)
-	server.SetReceiver(ServerReceiverF(func(_ context.Context, _ string, msg []byte) (<-chan []byte, error) {
+	server.SetReceiver(ServerReceiverF(func(_ context.Context, _ string, msg []byte) error {
 		expectedMsgWithServerCh <- string(msg)
-		msgCh := make(chan []byte, 1)
-		go func() {
-			msgCh <- msg
-		}()
-		return msgCh, nil
+		return nil
 	}))
 	server.SetSessionManager(newMockSessionManager())
 

@@ -69,7 +69,7 @@ func (m *Manager) GetSessionWithErr(sessionID string) (*State, error) {
 	return s, nil
 }
 
-func (m *Manager) OpenMessageQueueForSend(sessionID string) error {
+func (m *Manager) OpenMessageQueueForSend(sessionID string, streamID string) error {
 	state, has := m.GetSession(sessionID)
 	if !has {
 		return pkg.ErrLackSession
@@ -78,7 +78,7 @@ func (m *Manager) OpenMessageQueueForSend(sessionID string) error {
 	return nil
 }
 
-func (m *Manager) EnqueueMessageForSend(ctx context.Context, sessionID string, message []byte) error {
+func (m *Manager) EnqueueMessageForSend(ctx context.Context, sessionID string, streamID string, message []byte) error {
 	state, has := m.GetSession(sessionID)
 	if !has {
 		return pkg.ErrLackSession
@@ -86,7 +86,7 @@ func (m *Manager) EnqueueMessageForSend(ctx context.Context, sessionID string, m
 	return state.enqueueMessage(ctx, message)
 }
 
-func (m *Manager) DequeueMessageForSend(ctx context.Context, sessionID string) ([]byte, error) {
+func (m *Manager) DequeueMessageForSend(ctx context.Context, sessionID string, id string) ([]byte, error) {
 	state, has := m.GetSession(sessionID)
 	if !has {
 		return nil, pkg.ErrLackSession

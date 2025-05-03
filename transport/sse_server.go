@@ -186,7 +186,7 @@ func (t *sseServerTransport) Send(ctx context.Context, sessionID string, msg Mes
 	case <-t.ctx.Done():
 		return t.ctx.Err()
 	default:
-		return t.sessionManager.EnqueueMessageForSend(ctx, sessionID, msg)
+		return t.sessionManager.EnqueueMessageForSend(ctx, sessionID, "", msg)
 	}
 }
 
@@ -229,13 +229,13 @@ func (t *sseServerTransport) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 
-	if err := t.sessionManager.OpenMessageQueueForSend(sessionID); err != nil {
+	if err := t.sessionManager.OpenMessageQueueForSend(sessionID, ""); err != nil {
 		t.logger.Errorf("handleSSE sessionID=%s OpenMessageQueueForSend fail: %v", sessionID, err)
 		return
 	}
 
 	for {
-		msg, err := t.sessionManager.DequeueMessageForSend(r.Context(), sessionID)
+		msg, err := t.sessionManager.DequeueMessageForSend(r.Context(), sessionID, "")
 		if err != nil {
 			if errors.Is(err, pkg.ErrSendEOF) {
 				return
@@ -248,7 +248,7 @@ func (t *sseServerTransport) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 		if _, err = fmt.Fprintf(w, "event: message\ndata: %s\n\n", msg); err != nil {
 			t.logger.Errorf("Failed to write message: %v", err)
-			continue
+			return
 		}
 		flusher.Flush()
 	}
