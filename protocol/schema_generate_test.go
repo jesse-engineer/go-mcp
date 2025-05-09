@@ -256,6 +256,35 @@ func TestGenerateSchemaFromReqStruct(t *testing.T) {
 				Required: []string{"user"},
 			},
 		},
+		{
+			name: "map struct",
+			args: args{
+				v: struct {
+					User struct {
+						Name string            `json:"name"`
+						Info map[string]string `json:"info"`
+					} `json:"user"`
+				}{},
+			},
+			want: &InputSchema{
+				Type: Object,
+				Properties: map[string]*Property{
+					"user": {
+						Type: ObjectT,
+						Properties: map[string]*Property{
+							"name": {
+								Type: String,
+							},
+							"info": {
+								Type: ObjectT,
+							},
+						},
+						Required: []string{"name", "info"},
+					},
+				},
+				Required: []string{"user"},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

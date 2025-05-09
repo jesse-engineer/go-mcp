@@ -313,10 +313,11 @@ func TestVerifyAndUnmarshal(t *testing.T) {
 		Number  float64 `json:"number,omitempty"` // optional
 		Integer int     `json:"-"`                // ignore
 
-		String4Enum  string  `json:"string4enum,omitempty" enum:"a,b,c"`       // enum
-		Integer4Enum int     `json:"integer4enum,omitempty" enum:"1,2,3"`      // enum
-		Number4Enum  float64 `json:"number4enum,omitempty" enum:"1.1,2.2,3.3"` // enum
-		Number4Enum2 int     `json:"number4enum2,omitempty" enum:"1,2,3"`      // enum
+		String4Enum  string         `json:"string4enum,omitempty" enum:"a,b,c"`       // enum
+		Integer4Enum int            `json:"integer4enum,omitempty" enum:"1,2,3"`      // enum
+		Number4Enum  float64        `json:"number4enum,omitempty" enum:"1.1,2.2,3.3"` // enum
+		Number4Enum2 int            `json:"number4enum2,omitempty" enum:"1,2,3"`      // enum
+		MM           map[string]any `json:"mm,omitempty"`
 	}
 
 	// Generate schema for anonymous struct first
@@ -444,6 +445,10 @@ func TestVerifyAndUnmarshal(t *testing.T) {
 				Active bool   `json:"active"`
 			}{},
 		}, true},
+		{"validate map struct", args{
+			content: []byte(`{"string":"str","mm":{"a":1}}`),
+			v:       &testData{},
+		}, false},
 	}
 	_, err := generateSchemaFromReqStruct(testData{})
 	if err != nil {
