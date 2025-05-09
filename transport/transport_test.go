@@ -12,37 +12,41 @@ import (
 )
 
 type mockSessionManager struct {
-	pkg.SyncMap[chan []byte]
+	session2streamID2ch    pkg.SyncMap[*pkg.SyncMap[chan []byte]]
+	session2closedStreamID pkg.SyncMap[*pkg.SyncMap[struct{}]]
 }
 
 func newMockSessionManager() *mockSessionManager {
 	return &mockSessionManager{}
 }
 
-func (m *mockSessionManager) CreateSession() string {
+func (m *mockSessionManager) CreateSession(_ bool) string {
 	sessionID := uuid.NewString()
-	m.Store(sessionID, nil)
+	m.session2streamID2ch.Store(sessionID, &pkg.SyncMap[chan []byte]{})
+	m.session2closedStreamID.Store(sessionID, &pkg.SyncMap[struct{}]{})
 	return sessionID
 }
 
-func (m *mockSessionManager) OpenMessageQueueForSend(sessionID string, streamID string) error {
-	_, ok := m.Load(sessionID)
+func (m *mockSessionManager) OpenMessageQueueForSend(ctx context.Context, sessionID string) error {
+	streamID2ch, ok := m.session2streamID2ch.Load(sessionID)
 	if !ok {
 		return pkg.ErrLackSession
 	}
-	m.Store(sessionID, make(chan []byte))
+	streamID, _ := GetStreamIDFromCtx(ctx)
+	streamID2ch.Store(streamID, make(chan []byte, 1))
 	return nil
 }
 
-func (m *mockSessionManager) IsExistSession(sessionID string) bool {
-	_, has := m.Load(sessionID)
-	return has
-}
-
-func (m *mockSessionManager) EnqueueMessageForSend(ctx context.Context, sessionID string, streamID string, message []byte) error {
-	ch, has := m.Load(sessionID)
+func (m *mockSessionManager) EnqueueMessageForSend(ctx context.Context, sessionID string, message []byte) error {
+	streamID2ch, has := m.session2streamID2ch.Load(sessionID)
 	if !has {
 		return pkg.ErrLackSession
+	}
+
+	streamID, _ := GetStreamIDFromCtx(ctx)
+	ch, ok := streamID2ch.Load(streamID)
+	if !ok {
+		return pkg.ErrQueueNotOpened
 	}
 
 	select {
@@ -53,10 +57,16 @@ func (m *mockSessionManager) EnqueueMessageForSend(ctx context.Context, sessionI
 	}
 }
 
-func (m *mockSessionManager) DequeueMessageForSend(ctx context.Context, sessionID string, id string) ([]byte, error) {
-	ch, has := m.Load(sessionID)
+func (m *mockSessionManager) DequeueMessageForSend(ctx context.Context, sessionID string) ([]byte, error) {
+	streamID2ch, has := m.session2streamID2ch.Load(sessionID)
 	if !has {
 		return nil, pkg.ErrLackSession
+	}
+
+	streamID, _ := GetStreamIDFromCtx(ctx)
+	ch, ok := streamID2ch.Load(streamID)
+	if !ok {
+		return nil, pkg.ErrQueueNotOpened
 	}
 
 	select {
@@ -65,38 +75,49 @@ func (m *mockSessionManager) DequeueMessageForSend(ctx context.Context, sessionI
 	case msg, ok := <-ch:
 		if msg == nil && !ok {
 			// There are no new messages and the chan has been closed, indicating that the request may need to be terminated.
-			return nil, pkg.ErrSendEOF
+			return nil, pkg.ErrDequeueMessageEOF
 		}
+		closedStreamID, _ := m.session2closedStreamID.Load(sessionID)
+		closedStreamID.Store(streamID, struct{}{})
+		close(ch)
 		return msg, nil
 	}
 }
 
 func (m *mockSessionManager) CloseSession(sessionID string) {
-	ch, ok := m.LoadAndDelete(sessionID)
-	if !ok {
-		return
-	}
-	close(ch)
+	streamID2ch, _ := m.session2streamID2ch.LoadAndDelete(sessionID)
+	closeStreamIDSet, _ := m.session2closedStreamID.Load(sessionID)
+	defer m.session2closedStreamID.Delete(sessionID)
+
+	streamID2ch.Range(func(streamID string, ch chan []byte) bool {
+		if _, ok := closeStreamIDSet.Load(streamID); ok {
+			return true
+		}
+		close(ch)
+		return true
+	})
 }
 
 func (m *mockSessionManager) CloseAllSessions() {
-	m.Range(func(key string, value chan []byte) bool {
-		m.Delete(key)
-		close(value)
+	m.session2streamID2ch.Range(func(sessionID string, _ *pkg.SyncMap[chan []byte]) bool {
+		m.CloseSession(sessionID)
 		return true
 	})
 }
 
 func testTransport(t *testing.T, client ClientTransport, server ServerTransport) {
 	testMsg := "hello server"
-	expectedMsgWithServerCh := make(chan string, 1)
-	server.SetReceiver(ServerReceiverF(func(_ context.Context, _ string, msg []byte) error {
+	expectedMsgWithServerCh := make(chan string, 3)
+	server.SetSessionManager(newMockSessionManager())
+	server.SetReceiver(ServerReceiverF(func(ctx context.Context, sessionID string, msg []byte) error {
 		expectedMsgWithServerCh <- string(msg)
+		if srv, ok := server.(*streamableHTTPServerTransport); ok {
+			return srv.sessionManager.EnqueueMessageForSend(ctx, sessionID, msg)
+		}
 		return nil
 	}))
-	server.SetSessionManager(newMockSessionManager())
 
-	expectedMsgWithClientCh := make(chan string, 1)
+	expectedMsgWithClientCh := make(chan string, 3)
 	client.SetReceiver(ClientReceiverF(func(_ context.Context, msg []byte) error {
 		expectedMsgWithClientCh <- string(msg)
 		return nil
@@ -144,9 +165,23 @@ func testTransport(t *testing.T, client ClientTransport, server ServerTransport)
 	if err := client.Send(context.Background(), Message(testMsg)); err != nil {
 		t.Fatalf("client.Send() failed: %v", err)
 	}
+
 	expectedMsg := <-expectedMsgWithServerCh
 	if !reflect.DeepEqual(expectedMsg, testMsg) {
 		t.Fatalf("client.Send() got %v, want %v", expectedMsg, testMsg)
+	}
+
+	if srv, ok := server.(*streamableHTTPServerTransport); ok && srv.stateMode == Stateless {
+		return
+	}
+
+	sessionID := ""
+	if cli, ok := client.(*sseClientTransport); ok {
+		sessionID = cli.messageEndpoint.Query().Get("sessionID")
+	}
+
+	if err := server.Send(context.Background(), sessionID, Message(testMsg)); err != nil {
+		t.Fatalf("server.Send() failed: %v", err)
 	}
 	expectedMsg = <-expectedMsgWithClientCh
 	if !reflect.DeepEqual(expectedMsg, testMsg) {

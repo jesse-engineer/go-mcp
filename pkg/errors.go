@@ -16,7 +16,8 @@ var (
 	ErrSessionHasNotInitialized  = errors.New("the session has not been initialized")
 	ErrLackSession               = errors.New("lack session")
 	ErrSessionClosed             = errors.New("session closed")
-	ErrSendEOF                   = errors.New("send EOF")
+	ErrQueueNotOpened            = errors.New("queue has not been opened")
+	ErrDequeueMessageEOF         = errors.New("dequeue message EOF")
 )
 
 type ResponseError struct {

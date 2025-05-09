@@ -186,7 +186,7 @@ func (t *sseServerTransport) Send(ctx context.Context, sessionID string, msg Mes
 	case <-t.ctx.Done():
 		return t.ctx.Err()
 	default:
-		return t.sessionManager.EnqueueMessageForSend(ctx, sessionID, "", msg)
+		return t.sessionManager.EnqueueMessageForSend(ctx, sessionID, msg)
 	}
 }
 
@@ -218,7 +218,7 @@ func (t *sseServerTransport) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	// Create an SSE connection
-	sessionID := t.sessionManager.CreateSession()
+	sessionID := t.sessionManager.CreateSession(false)
 	defer t.sessionManager.CloseSession(sessionID)
 
 	uri := fmt.Sprintf("%s?sessionID=%s", t.messageEndpointURL, sessionID)
@@ -229,15 +229,15 @@ func (t *sseServerTransport) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 
-	if err := t.sessionManager.OpenMessageQueueForSend(sessionID, ""); err != nil {
+	if err := t.sessionManager.OpenMessageQueueForSend(r.Context(), sessionID); err != nil {
 		t.logger.Errorf("handleSSE sessionID=%s OpenMessageQueueForSend fail: %v", sessionID, err)
 		return
 	}
 
 	for {
-		msg, err := t.sessionManager.DequeueMessageForSend(r.Context(), sessionID, "")
+		msg, err := t.sessionManager.DequeueMessageForSend(r.Context(), sessionID)
 		if err != nil {
-			if errors.Is(err, pkg.ErrSendEOF) {
+			if errors.Is(err, pkg.ErrDequeueMessageEOF) {
 				return
 			}
 			t.logger.Debugf("sse connect dequeueMessage err: %+v, sessionID=%s", err.Error(), sessionID)

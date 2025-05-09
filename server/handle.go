@@ -28,7 +28,7 @@ func (server *Server) handleRequestWithInitialize(ctx context.Context, sessionID
 	protocolVersion := request.ProtocolVersion
 
 	if midVar, ok := ctx.Value(transport.SessionIDForReturnKey{}).(*transport.SessionIDForReturn); ok {
-		sessionID = server.sessionManager.CreateSession()
+		sessionID = server.sessionManager.CreateSession(false)
 		midVar.SessionID = sessionID
 	}
 

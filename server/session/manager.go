@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ThinkInAIXYZ/go-mcp/pkg"
+	"github.com/ThinkInAIXYZ/go-mcp/transport"
 )
 
 type Manager struct {
@@ -38,9 +39,9 @@ func (m *Manager) SetLogger(logger pkg.Logger) {
 	m.logger = logger
 }
 
-func (m *Manager) CreateSession() string {
+func (m *Manager) CreateSession(disposable bool) string {
 	sessionID := uuid.NewString()
-	state := NewState(sessionID)
+	state := NewState(sessionID, disposable)
 	m.activeSessions.Store(sessionID, state)
 	return sessionID
 }
@@ -64,34 +65,48 @@ func (m *Manager) GetSessionWithErr(sessionID string) (*State, error) {
 			return nil, pkg.ErrSessionClosed
 		}
 		return nil, pkg.ErrLackSession
-
 	}
 	return s, nil
 }
 
-func (m *Manager) OpenMessageQueueForSend(sessionID string, streamID string) error {
+func (m *Manager) OpenMessageQueueForSend(ctx context.Context, sessionID string) error {
 	state, has := m.GetSession(sessionID)
 	if !has {
 		return pkg.ErrLackSession
 	}
-	state.openMessageQueueForSend()
+	streamID, _ := transport.GetStreamIDFromCtx(ctx)
+	state.openMessageQueueForSend(streamID)
 	return nil
 }
 
-func (m *Manager) EnqueueMessageForSend(ctx context.Context, sessionID string, streamID string, message []byte) error {
+func (m *Manager) CloseMessageQueueForSend(ctx context.Context, sessionID string) {
+	state, has := m.GetSession(sessionID)
+	if !has {
+		return
+	}
+	streamID, err := transport.GetStreamIDFromCtx(ctx)
+	if err != nil {
+		return
+	}
+	state.closeMessageQueueForSend(streamID)
+}
+
+func (m *Manager) EnqueueMessageForSend(ctx context.Context, sessionID string, message []byte) error {
 	state, has := m.GetSession(sessionID)
 	if !has {
 		return pkg.ErrLackSession
 	}
-	return state.enqueueMessage(ctx, message)
+	streamID, _ := transport.GetStreamIDFromCtx(ctx)
+	return state.enqueueMessage(ctx, streamID, message)
 }
 
-func (m *Manager) DequeueMessageForSend(ctx context.Context, sessionID string, id string) ([]byte, error) {
+func (m *Manager) DequeueMessageForSend(ctx context.Context, sessionID string) ([]byte, error) {
 	state, has := m.GetSession(sessionID)
 	if !has {
 		return nil, pkg.ErrLackSession
 	}
-	return state.dequeueMessage(ctx)
+	streamID, _ := transport.GetStreamIDFromCtx(ctx)
+	return state.dequeueMessage(ctx, streamID)
 }
 
 func (m *Manager) UpdateSessionLastActiveAt(sessionID string) {
@@ -130,6 +145,10 @@ func (m *Manager) StartHeartbeatAndCleanInvalidSessions() {
 		case <-ticker.C:
 			now := time.Now()
 			m.activeSessions.Range(func(sessionID string, state *State) bool {
+				if state.disposable {
+					return true
+				}
+
 				if m.maxIdleTime != 0 && now.Sub(state.lastActiveAt) > m.maxIdleTime {
 					m.logger.Infof("session expire, session id: %v", sessionID)
 					m.CloseSession(sessionID)

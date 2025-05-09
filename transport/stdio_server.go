@@ -53,7 +53,7 @@ func (t *stdioServerTransport) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.cancel = cancel
 
-	t.sessionID = t.sessionManager.CreateSession()
+	t.sessionID = t.sessionManager.CreateSession(false)
 
 	t.startReceive(ctx)
 

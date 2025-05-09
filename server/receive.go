@@ -21,6 +21,7 @@ func (server *Server) receive(ctx context.Context, sessionID string, msg []byte)
 		if err != nil {
 			return err
 		}
+
 		if err = s.ReceiveNotify(notify); err != nil {
 			notify.RawParams = nil // simplified log
 			server.logger.Errorf("receive notify:%+v error: %s", notify, err.Error())
@@ -40,6 +41,7 @@ func (server *Server) receive(ctx context.Context, sessionID string, msg []byte)
 		if err != nil {
 			return err
 		}
+
 		if err = s.ReceiveResponse(resp); err != nil {
 			resp.RawResult = nil // simplified log
 			server.logger.Errorf("receive response:%+v error: %s", resp, err.Error())
@@ -59,7 +61,7 @@ func (server *Server) receive(ctx context.Context, sessionID string, msg []byte)
 	if sessionID != "" && req.Method != protocol.Initialize && req.Method != protocol.Ping {
 		if s, ok := server.sessionManager.GetSession(sessionID); !ok {
 			return pkg.ErrLackSession
-		} else if !s.GetReady() {
+		} else if !s.IsReady() {
 			return pkg.ErrSessionHasNotInitialized
 		}
 	}
@@ -71,18 +73,16 @@ func (server *Server) receive(ctx context.Context, sessionID string, msg []byte)
 		return errors.New("server already shutdown")
 	}
 
-	ch := make(chan []byte, 1)
 	go func(ctx context.Context) {
 		defer pkg.Recover()
 		defer server.inFlyRequest.Done()
-		defer close(ch)
+		defer server.sessionManager.CloseMessageQueueForSend(ctx, sessionID)
 
 		if err := server.receiveRequest(ctx, sessionID, req); err != nil {
 			req.RawParams = nil
 			server.logger.Errorf("receive request:%+v error: %s", req, err.Error())
 			return
 		}
-
 	}(pkg.NewCancelShieldContext(ctx))
 	return nil
 }

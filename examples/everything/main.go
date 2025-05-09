@@ -81,7 +81,7 @@ func getTransport() (t transport.ServerTransport) {
 	var mode, port, stateMode string
 	flag.StringVar(&mode, "transport", "streamable_http", "The transport to use, should be \"stdio\" or \"sse\" or \"streamable_http\"")
 	flag.StringVar(&port, "port", "8080", "sse server address")
-	flag.StringVar(&stateMode, "state_mode", "stateful", "streamable_http server state mode, should be \"stateless\" or \"stateful\"")
+	flag.StringVar(&stateMode, "state_mode", "stateless", "streamable_http server state mode, should be \"stateless\" or \"stateful\"")
 	flag.Parse()
 
 	switch mode {

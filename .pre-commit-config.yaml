@@ -17,9 +17,9 @@ repos:
       - id: go-fmt
       - id: go-imports
       - id: no-go-testing
-#       - id: golangci-lint
+      - id: golangci-lint
 #       - id: go-unit-tests
-#       - id: go-build
+      - id: go-build
       - id: go-mod-tidy
 
 #       go install golang.org/x/tools/cmd/goimports@latest

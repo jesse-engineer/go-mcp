@@ -24,24 +24,24 @@ const (
 	Stateless StateMode = "stateless"
 )
 
-type StreamIDKey struct{}
-
-func setStreamIDToCtx(ctx context.Context, streamID string) context.Context {
-	return context.WithValue(ctx, StreamIDKey{}, streamID)
-}
-
-func getStreamIDFromCtx(ctx context.Context) (string, error) {
-	s := ctx.Value(StreamIDKey{})
-	if s == nil {
-		return "", errors.New("no streamID found")
-	}
-	return s.(string), nil
-}
-
 type SessionIDForReturnKey struct{}
 
 type SessionIDForReturn struct {
 	SessionID string
+}
+
+type streamIDKey struct{}
+
+func SetStreamIDToCtx(ctx context.Context, streamID string) context.Context {
+	return context.WithValue(ctx, streamIDKey{}, streamID)
+}
+
+func GetStreamIDFromCtx(ctx context.Context) (string, error) {
+	s := ctx.Value(streamIDKey{})
+	if s == nil {
+		return "", errors.New("no streamID found")
+	}
+	return s.(string), nil
 }
 
 type StreamableHTTPServerTransportOption func(*streamableHTTPServerTransport)
@@ -184,11 +184,7 @@ func (t *streamableHTTPServerTransport) Send(ctx context.Context, sessionID stri
 	case <-t.ctx.Done():
 		return t.ctx.Err()
 	default:
-		streamID, err := getStreamIDFromCtx(ctx)
-		if err != nil {
-			return err
-		}
-		return t.sessionManager.EnqueueMessageForSend(ctx, sessionID, streamID, msg)
+		return t.sessionManager.EnqueueMessageForSend(ctx, sessionID, msg)
 	}
 }
 
@@ -232,8 +228,7 @@ func (t *streamableHTTPServerTransport) handlePost(w http.ResponseWriter, r *htt
 		return
 	}
 
-	streamID := uuid.NewString()
-	ctx := setStreamIDToCtx(r.Context(), streamID)
+	ctx := SetStreamIDToCtx(r.Context(), uuid.NewString())
 	// Disconnection SHOULD NOT be interpreted as the client canceling its request.
 	// To cancel, the client SHOULD explicitly send an MCP CancelledNotification.
 	ctx = pkg.NewCancelShieldContext(ctx)
@@ -243,11 +238,11 @@ func (t *streamableHTTPServerTransport) handlePost(w http.ResponseWriter, r *htt
 		// For InitializeRequest HTTP response
 		ctx = context.WithValue(ctx, SessionIDForReturnKey{}, &SessionIDForReturn{})
 	} else {
-		sessionID = t.sessionManager.CreateSession()
+		sessionID = t.sessionManager.CreateSession(true)
 		defer t.sessionManager.CloseSession(sessionID)
 	}
 
-	if err = t.sessionManager.OpenMessageQueueForSend(sessionID, streamID); err != nil {
+	if err = t.sessionManager.OpenMessageQueueForSend(ctx, sessionID); err != nil {
 		t.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -261,9 +256,9 @@ func (t *streamableHTTPServerTransport) handlePost(w http.ResponseWriter, r *htt
 		return
 	}
 
-	firstMsg, err := t.sessionManager.DequeueMessageForSend(ctx, sessionID, streamID)
+	firstMsg, err := t.sessionManager.DequeueMessageForSend(ctx, sessionID)
 	if err != nil {
-		if errors.Is(err, pkg.ErrSendEOF) {
+		if errors.Is(err, pkg.ErrDequeueMessageEOF) {
 			t.writeError(w, http.StatusInternalServerError, "handle request fail")
 			return
 		}
@@ -284,9 +279,9 @@ func (t *streamableHTTPServerTransport) handlePost(w http.ResponseWriter, r *htt
 	}
 
 	for i := 0; true; i++ {
-		msg, err := t.sessionManager.DequeueMessageForSend(ctx, sessionID, streamID)
+		msg, err := t.sessionManager.DequeueMessageForSend(ctx, sessionID)
 		if err != nil {
-			if !errors.Is(err, pkg.ErrSendEOF) {
+			if !errors.Is(err, pkg.ErrDequeueMessageEOF) {
 				t.writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
@@ -331,7 +326,6 @@ func (t *streamableHTTPServerTransport) handlePost(w http.ResponseWriter, r *htt
 		}
 		flusher.Flush()
 	}
-
 }
 
 func (t *streamableHTTPServerTransport) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -366,7 +360,7 @@ func (t *streamableHTTPServerTransport) handleGet(w http.ResponseWriter, r *http
 		flusher.Flush()
 		return
 	}
-	if err := t.sessionManager.OpenMessageQueueForSend(sessionID, ""); err != nil {
+	if err := t.sessionManager.OpenMessageQueueForSend(r.Context(), sessionID); err != nil {
 		t.writeError(w, http.StatusBadRequest, err.Error())
 		flusher.Flush()
 		return
@@ -375,9 +369,9 @@ func (t *streamableHTTPServerTransport) handleGet(w http.ResponseWriter, r *http
 	flusher.Flush()
 
 	for {
-		msg, err := t.sessionManager.DequeueMessageForSend(r.Context(), sessionID, "")
+		msg, err := t.sessionManager.DequeueMessageForSend(r.Context(), sessionID)
 		if err != nil {
-			if errors.Is(err, pkg.ErrSendEOF) {
+			if errors.Is(err, pkg.ErrDequeueMessageEOF) {
 				return
 			}
 			t.logger.Debugf("sse connect dequeueMessage err: %+v, sessionID=%s", err.Error(), sessionID)

@@ -17,17 +17,18 @@ import (
 	"github.com/ThinkInAIXYZ/go-mcp/transport"
 )
 
-var ErrQueueNotOpened = errors.New("queue has not been opened")
-
 type State struct {
-	ID string
+	id string
+
+	disposable bool
 
 	lastActiveAt time.Time
 
 	transport transport.ServerTransport
 
-	mu       sync.RWMutex
-	sendChan chan []byte
+	mu                sync.RWMutex
+	streamID2sendChan map[string]chan []byte
+	closedStreamIDSet map[string]struct{}
 
 	requestID int64
 
@@ -45,10 +46,13 @@ type State struct {
 	closed              *pkg.AtomicBool
 }
 
-func NewState(sessionID string) *State {
+func NewState(sessionID string, disposable bool) *State {
 	return &State{
-		ID:                  sessionID,
+		id:                  sessionID,
+		disposable:          disposable,
 		lastActiveAt:        time.Now(),
+		streamID2sendChan:   make(map[string]chan []byte),
+		closedStreamIDSet:   make(map[string]struct{}),
 		reqID2respChan:      cmap.New[chan *protocol.JSONRPCResponse](),
 		subscribedResources: cmap.New[struct{}](),
 		receivedInitRequest: pkg.NewAtomicBool(),
@@ -72,6 +76,9 @@ func (s *State) SetReceivedInitRequest(transport transport.ServerTransport) {
 }
 
 func (s *State) GetReceivedInitRequest() bool {
+	if s.disposable {
+		return true
+	}
 	return s.receivedInitRequest.Load()
 }
 
@@ -79,7 +86,10 @@ func (s *State) SetReady() {
 	s.ready.Store(true)
 }
 
-func (s *State) GetReady() bool {
+func (s *State) IsReady() bool {
+	if s.disposable {
+		return true
+	}
 	return s.ready.Load()
 }
 
@@ -118,7 +128,7 @@ func (s *State) CallClient(ctx context.Context, method protocol.Method, params p
 }
 
 func (s *State) ReceiveNotify(notify *protocol.JSONRPCNotification) error {
-	if notify.Method != protocol.NotificationInitialized && !s.GetReady() {
+	if notify.Method != protocol.NotificationInitialized && !s.IsReady() {
 		return pkg.ErrSessionHasNotInitialized
 	}
 
@@ -133,13 +143,13 @@ func (s *State) ReceiveNotify(notify *protocol.JSONRPCNotification) error {
 func (s *State) ReceiveResponse(response *protocol.JSONRPCResponse) error {
 	respChan, ok := s.GetReqID2respChan().Get(fmt.Sprint(response.ID))
 	if !ok {
-		return fmt.Errorf("%w: sessionID=%+v, requestID=%+v", pkg.ErrLackResponseChan, s.ID, response.ID)
+		return fmt.Errorf("%w: sessionID=%+v, requestID=%+v", pkg.ErrLackResponseChan, s.id, response.ID)
 	}
 
 	select {
 	case respChan <- response:
 	default:
-		return fmt.Errorf("%w: sessionID=%+v, response=%+v", pkg.ErrDuplicateResponseReceived, s.ID, response)
+		return fmt.Errorf("%w: sessionID=%+v, response=%+v", pkg.ErrDuplicateResponseReceived, s.id, response)
 	}
 	return nil
 }
@@ -171,7 +181,7 @@ func (s *State) SendMsgWithNotification(ctx context.Context, method protocol.Met
 		return err
 	}
 
-	if err = s.transport.Send(ctx, s.ID, message); err != nil {
+	if err = s.transport.Send(ctx, s.id, message); err != nil {
 		return fmt.Errorf("sendNotification: transport send: %w", err)
 	}
 	return nil
@@ -183,7 +193,7 @@ func (s *State) SendMsgWithResponse(ctx context.Context, resp *protocol.JSONRPCR
 		return err
 	}
 
-	if err = s.transport.Send(ctx, s.ID, message); err != nil {
+	if err = s.transport.Send(ctx, s.id, message); err != nil {
 		return fmt.Errorf("sendResponse: transport send: %w", err)
 	}
 	return nil
@@ -205,7 +215,7 @@ func (s *State) sendMsgWithRequest(ctx context.Context, requestID protocol.Reque
 		return err
 	}
 
-	if err = s.transport.Send(ctx, s.ID, message); err != nil {
+	if err = s.transport.Send(ctx, s.id, message); err != nil {
 		return fmt.Errorf("sendRequest: transport send: %w", err)
 	}
 	return nil
@@ -221,25 +231,42 @@ func (s *State) close() {
 
 	s.closed.Store(true)
 
-	if s.sendChan != nil {
-		close(s.sendChan)
+	for streamID, ch := range s.streamID2sendChan {
+		if _, ok := s.closedStreamIDSet[streamID]; ok {
+			continue
+		}
+		close(ch)
 	}
+	s.streamID2sendChan = make(map[string]chan []byte)
 }
 
 func (s *State) updateLastActiveAt() {
 	s.lastActiveAt = time.Now()
 }
 
-func (s *State) openMessageQueueForSend() {
+func (s *State) openMessageQueueForSend(streamID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.sendChan == nil {
-		s.sendChan = make(chan []byte, 64)
+	if _, ok := s.streamID2sendChan[streamID]; !ok {
+		s.streamID2sendChan[streamID] = make(chan []byte, 1)
 	}
 }
 
-func (s *State) enqueueMessage(ctx context.Context, message []byte) error {
+func (s *State) closeMessageQueueForSend(streamID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if ch, ok := s.streamID2sendChan[streamID]; ok {
+		if _, ok := s.closedStreamIDSet[streamID]; ok {
+			return
+		}
+		s.closedStreamIDSet[streamID] = struct{}{}
+		close(ch)
+	}
+}
+
+func (s *State) enqueueMessage(ctx context.Context, streamID string, message []byte) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -247,33 +274,35 @@ func (s *State) enqueueMessage(ctx context.Context, message []byte) error {
 		return errors.New("session already closed")
 	}
 
-	if s.sendChan == nil {
-		return ErrQueueNotOpened
+	sendChan, ok := s.streamID2sendChan[streamID]
+	if !ok {
+		return pkg.ErrQueueNotOpened
 	}
 
 	select {
-	case s.sendChan <- message:
+	case sendChan <- message:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-func (s *State) dequeueMessage(ctx context.Context) ([]byte, error) {
+func (s *State) dequeueMessage(ctx context.Context, streamID string) ([]byte, error) {
 	s.mu.RLock()
-	if s.sendChan == nil {
+	sendChan, ok := s.streamID2sendChan[streamID]
+	if !ok {
 		s.mu.RUnlock()
-		return nil, ErrQueueNotOpened
+		return nil, pkg.ErrQueueNotOpened
 	}
 	s.mu.RUnlock()
 
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case msg, ok := <-s.sendChan:
+	case msg, ok := <-sendChan:
 		if msg == nil && !ok {
 			// There are no new messages and the chan has been closed, indicating that the request may need to be terminated.
-			return nil, pkg.ErrSendEOF
+			return nil, pkg.ErrDequeueMessageEOF
 		}
 		return msg, nil
 	}
