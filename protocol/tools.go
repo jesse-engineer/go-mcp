@@ -103,6 +103,7 @@ type InputSchema struct {
 
 // CallToolRequest represents a request to call a specific tool
 type CallToolRequest struct {
+	Meta         map[string]interface{} `json:"_meta,omitempty"`
 	Name         string                 `json:"name"`
 	Arguments    map[string]interface{} `json:"arguments,omitempty"`
 	RawArguments json.RawMessage        `json:"-"`

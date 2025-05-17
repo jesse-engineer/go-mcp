@@ -56,7 +56,7 @@ func (server *Server) Sampling(ctx context.Context, request *protocol.CreateMess
 	return &result, nil
 }
 
-func (server *Server) Progress(ctx context.Context, notify *protocol.ProgressNotification) error {
+func (server *Server) SendProgressNotification(ctx context.Context, notify *protocol.ProgressNotification) error {
 	sessionID, err := getSessionIDFromCtx(ctx)
 	if err != nil {
 		return err

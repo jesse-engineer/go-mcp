@@ -1,5 +1,7 @@
 package protocol
 
+const ProgressTokenKey = "progressToken"
+
 // ProgressNotification represents a progress notification for a long-running request
 type ProgressNotification struct {
 	ProgressToken ProgressToken `json:"progressToken"`
