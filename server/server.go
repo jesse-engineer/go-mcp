@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/ThinkInAIXYZ/go-mcp/pkg"
 	"github.com/ThinkInAIXYZ/go-mcp/protocol"
 	"github.com/ThinkInAIXYZ/go-mcp/server/session"
@@ -44,6 +46,34 @@ func WithLogger(logger pkg.Logger) Option {
 	}
 }
 
+// ToolMiddleware defines the middleware type of the tool handler
+// Allow ToolHandlerFunc to be wrapped like a chain call
+type ToolMiddleware func(ToolHandlerFunc) ToolHandlerFunc
+
+// RateLimitMiddleware Return a rate-limiting middleware
+func RateLimitMiddleware(limiter pkg.RateLimiter) ToolMiddleware {
+	return func(next ToolHandlerFunc) ToolHandlerFunc {
+		return func(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
+			if limiter != nil && !limiter.Allow(req.Name) {
+				return nil, pkg.ErrRateLimitExceeded
+			}
+			return next(ctx, req)
+		}
+	}
+}
+
+func WithPagination(limit int) Option {
+	return func(s *Server) {
+		s.paginationLimit = limit
+	}
+}
+
+func WithGenSessionIDFunc(genSessionID func(context.Context) string) Option {
+	return func(s *Server) {
+		s.genSessionID = genSessionID
+	}
+}
+
 type Server struct {
 	transport transport.ServerTransport
 
@@ -61,7 +91,11 @@ type Server struct {
 	serverInfo   *protocol.Implementation
 	instructions string
 
+	paginationLimit int
+
 	logger pkg.Logger
+
+	genSessionID func(ctx context.Context) string
 }
 
 func NewServer(t transport.ServerTransport, opts ...Option) (*Server, error) {
@@ -72,14 +106,15 @@ func NewServer(t transport.ServerTransport, opts ...Option) (*Server, error) {
 			Resources: &protocol.ResourcesCapability{ListChanged: true, Subscribe: true},
 			Tools:     &protocol.ToolsCapability{ListChanged: true},
 		},
-		inShutdown: pkg.NewAtomicBool(),
-		serverInfo: &protocol.Implementation{},
-		logger:     pkg.DefaultLogger,
+		inShutdown:   pkg.NewAtomicBool(),
+		serverInfo:   &protocol.Implementation{},
+		logger:       pkg.DefaultLogger,
+		genSessionID: func(context.Context) string { return uuid.NewString() },
 	}
 
 	t.SetReceiver(transport.ServerReceiverF(server.receive))
 
-	server.sessionManager = session.NewManager(server.sessionDetection)
+	server.sessionManager = session.NewManager(server.sessionDetection, server.genSessionID)
 
 	for _, opt := range opts {
 		opt(server)
@@ -112,7 +147,10 @@ type toolEntry struct {
 
 type ToolHandlerFunc func(context.Context, *protocol.CallToolRequest) (*protocol.CallToolResult, error)
 
-func (server *Server) RegisterTool(tool *protocol.Tool, toolHandler ToolHandlerFunc) {
+func (server *Server) RegisterTool(tool *protocol.Tool, toolHandler ToolHandlerFunc, middlewares ...ToolMiddleware) {
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		toolHandler = middlewares[i](toolHandler)
+	}
 	server.tools.Store(tool.Name, &toolEntry{tool: tool, handler: toolHandler})
 	if !server.sessionManager.IsEmpty() {
 		if err := server.sendNotification4ToolListChanges(context.Background()); err != nil {

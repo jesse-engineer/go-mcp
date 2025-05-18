@@ -77,7 +77,7 @@ func (f ServerReceiverF) Receive(ctx context.Context, sessionID string, msg []by
 }
 
 type sessionManager interface {
-	CreateSession() string
+	CreateSession(context.Context) string
 	OpenMessageQueueForSend(sessionID string) error
 	EnqueueMessageForSend(ctx context.Context, sessionID string, message []byte) error
 	DequeueMessageForSend(ctx context.Context, sessionID string) ([]byte, error)

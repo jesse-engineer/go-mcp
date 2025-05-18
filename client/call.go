@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"sync/atomic"
 
+	"github.com/google/uuid"
+
 	"github.com/ThinkInAIXYZ/go-mcp/pkg"
 	"github.com/ThinkInAIXYZ/go-mcp/protocol"
 )
@@ -214,8 +216,36 @@ func (client *Client) CallTool(ctx context.Context, request *protocol.CallToolRe
 	return &result, nil
 }
 
+// CallToolWithProgressChan progressCh Used to return the progress notification, chan will close in the method after the end of the function.
+func (client *Client) CallToolWithProgressChan(ctx context.Context, request *protocol.CallToolRequest,
+	progressCh chan<- *protocol.ProgressNotification) (*protocol.CallToolResult, error) { //nolint:gofumpt
+
+	progressToken := uuid.NewString()
+	client.progressChanRW.Lock()
+	client.progressToken2notifyChan[progressToken] = progressCh
+	client.progressChanRW.Unlock()
+	defer func() {
+		client.progressChanRW.Lock()
+		defer client.progressChanRW.Unlock()
+
+		delete(client.progressToken2notifyChan, progressToken)
+		close(progressCh)
+	}()
+
+	if request.Meta == nil {
+		request.Meta = make(map[string]interface{})
+	}
+	request.Meta[protocol.ProgressTokenKey] = progressToken
+
+	return client.CallTool(ctx, request)
+}
+
 func (client *Client) sendNotification4Initialized(ctx context.Context) error {
 	return client.sendMsgWithNotification(ctx, protocol.NotificationInitialized, protocol.NewInitializedNotification())
+}
+
+func (client *Client) sendNotification4Cancel(ctx context.Context, requestID protocol.RequestID, reason string) error {
+	return client.sendMsgWithNotification(ctx, protocol.NotificationCancelled, protocol.NewCancelledNotification(requestID, reason))
 }
 
 // Responsible for request and response assembly
@@ -235,6 +265,9 @@ func (client *Client) callServer(ctx context.Context, method protocol.Method, pa
 
 	select {
 	case <-ctx.Done():
+		if err := client.sendNotification4Cancel(context.Background(), requestID, ctx.Err().Error()); err != nil {
+			client.logger.Warnf("Failed to send cancellation notification: %v", err)
+		}
 		return nil, ctx.Err()
 	case response := <-respChan:
 		if err := response.Error; err != nil {

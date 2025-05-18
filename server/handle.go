@@ -28,7 +28,7 @@ func (server *Server) handleRequestWithInitialize(ctx context.Context, sessionID
 	protocolVersion := request.ProtocolVersion
 
 	if midVar, ok := ctx.Value(transport.SessionIDForReturnKey{}).(*transport.SessionIDForReturn); ok {
-		sessionID = server.sessionManager.CreateSession()
+		sessionID = server.sessionManager.CreateSession(ctx)
 		midVar.SessionID = sessionID
 	}
 
@@ -41,12 +41,7 @@ func (server *Server) handleRequestWithInitialize(ctx context.Context, sessionID
 		s.SetReceivedInitRequest()
 	}
 
-	return &protocol.InitializeResult{
-		ServerInfo:      *server.serverInfo,
-		Capabilities:    *server.capabilities,
-		ProtocolVersion: protocolVersion,
-		Instructions:    server.instructions,
-	}, nil
+	return protocol.NewInitializeResult(*server.serverInfo, *server.capabilities, protocolVersion, server.instructions), nil
 }
 
 func (server *Server) handleRequestWithListPrompts(rawParams json.RawMessage) (*protocol.ListPromptsResult, error) {
@@ -66,7 +61,13 @@ func (server *Server) handleRequestWithListPrompts(rawParams json.RawMessage) (*
 		prompts = append(prompts, *entry.prompt)
 		return true
 	})
-
+	if server.paginationLimit > 0 {
+		resourcesToReturn, nextCursor, err := protocol.PaginationLimit[protocol.Prompt](prompts, request.Cursor, server.paginationLimit)
+		return &protocol.ListPromptsResult{
+			Prompts:    resourcesToReturn,
+			NextCursor: nextCursor,
+		}, err
+	}
 	return &protocol.ListPromptsResult{
 		Prompts: prompts,
 	}, nil
@@ -93,7 +94,6 @@ func (server *Server) handleRequestWithListResources(rawParams json.RawMessage) 
 	if server.capabilities.Resources == nil {
 		return nil, pkg.ErrServerNotSupport
 	}
-
 	var request *protocol.ListResourcesRequest
 	if len(rawParams) > 0 {
 		if err := pkg.JSONUnmarshal(rawParams, &request); err != nil {
@@ -106,6 +106,13 @@ func (server *Server) handleRequestWithListResources(rawParams json.RawMessage) 
 		resources = append(resources, *entry.resource)
 		return true
 	})
+	if server.paginationLimit > 0 {
+		resourcesToReturn, nextCursor, err := protocol.PaginationLimit[protocol.Resource](resources, request.Cursor, server.paginationLimit)
+		return &protocol.ListResourcesResult{
+			Resources:  resourcesToReturn,
+			NextCursor: nextCursor,
+		}, err
+	}
 
 	return &protocol.ListResourcesResult{
 		Resources: resources,
@@ -129,7 +136,13 @@ func (server *Server) handleRequestWithListResourceTemplates(rawParams json.RawM
 		templates = append(templates, *entry.resourceTemplate)
 		return true
 	})
-
+	if server.paginationLimit > 0 {
+		resourcesToReturn, nextCursor, err := protocol.PaginationLimit[protocol.ResourceTemplate](templates, request.Cursor, server.paginationLimit)
+		return &protocol.ListResourceTemplatesResult{
+			ResourceTemplates: resourcesToReturn,
+			NextCursor:        nextCursor,
+		}, err
+	}
 	return &protocol.ListResourceTemplatesResult{
 		ResourceTemplates: templates,
 	}, nil
@@ -222,7 +235,13 @@ func (server *Server) handleRequestWithListTools(rawParams json.RawMessage) (*pr
 		tools = append(tools, entry.tool)
 		return true
 	})
-
+	if server.paginationLimit > 0 {
+		resourcesToReturn, nextCursor, err := protocol.PaginationLimit[*protocol.Tool](tools, request.Cursor, server.paginationLimit)
+		return &protocol.ListToolsResult{
+			Tools:      resourcesToReturn,
+			NextCursor: nextCursor,
+		}, err
+	}
 	return &protocol.ListToolsResult{Tools: tools}, nil
 }
 
@@ -265,6 +284,26 @@ func (server *Server) handleNotifyWithInitialized(sessionID string, rawParams js
 		return fmt.Errorf("the server has not received the client's initialization request")
 	}
 	s.SetReady()
+	return nil
+}
+
+func (server *Server) handleNotifyWithCancelled(sessionID string, rawParams json.RawMessage) error {
+	var params protocol.CancelledNotification
+	if err := pkg.JSONUnmarshal(rawParams, &params); err != nil {
+		return err
+	}
+
+	s, ok := server.sessionManager.GetSession(sessionID)
+	if !ok {
+		return pkg.ErrLackSession
+	}
+
+	cancel, ok := s.GetClientReqID2cancelFunc().Get(fmt.Sprint(params.RequestID))
+	if !ok {
+		return nil
+	}
+	cancel()
+
 	return nil
 }
 

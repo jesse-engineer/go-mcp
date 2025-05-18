@@ -161,14 +161,14 @@ func (t *streamableHTTPClientTransport) Send(ctx context.Context, msg Message) e
 }
 
 func (t *streamableHTTPClientTransport) startSSEStream() {
-	timer := time.NewTimer(time.Second)
-	defer timer.Stop()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
 	for {
-		timer.Reset(time.Second)
 		select {
 		case <-t.ctx.Done():
 			return
-		case <-timer.C:
+		case <-ticker.C:
 			sessionID := t.sessionID.Load()
 			if sessionID == "" {
 				continue // Try again after 1 second, waiting for the POST request to initialize the SessionID to complete
@@ -185,6 +185,11 @@ func (t *streamableHTTPClientTransport) startSSEStream() {
 
 			resp, err := t.client.Do(req)
 			if err != nil {
+				select {
+				case <-t.ctx.Done():
+					return
+				default:
+				}
 				t.logger.Errorf("failed to connect to SSE stream: %v", err)
 				continue
 			}

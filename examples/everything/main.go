@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ThinkInAIXYZ/go-mcp/pkg"
 	"github.com/ThinkInAIXYZ/go-mcp/protocol"
 	"github.com/ThinkInAIXYZ/go-mcp/server"
 	"github.com/ThinkInAIXYZ/go-mcp/transport"
@@ -22,6 +23,10 @@ type currentTimeReq struct {
 
 type deleteFileReq struct {
 	FileName string `json:"file_name" description:"file name"`
+}
+
+type generatePPTReq struct {
+	PPTDesc string `json:"ppt_description" description:"PPT description"`
 }
 
 var srv *server.Server
@@ -40,22 +45,54 @@ func main() {
 		log.Fatalf("Failed to create server: %v", err)
 	}
 
+	// 创建令牌桶限速器
+	limiter := pkg.NewTokenBucketLimiter(pkg.Rate{
+		Limit: 10.0, // 每秒10个请求
+		Burst: 20,   // 最多允许20个请求的突发
+	})
 	tool1, err := protocol.NewTool("current_time", "Get current time with timezone, Asia/Shanghai is default", currentTimeReq{})
 	if err != nil {
 		log.Fatalf("Failed to create tool: %v", err)
 		return
 	}
+	limiter.SetToolLimit(tool1.Name, pkg.Rate{Limit: 1.0, Burst: 1})
 
 	tool2, err := protocol.NewTool("delete_file", "delete file", deleteFileReq{})
 	if err != nil {
 		log.Fatalf("Failed to create tool: %v", err)
 		return
 	}
+	limiter.SetToolLimit(tool2.Name, pkg.Rate{Limit: 1.0, Burst: 1})
+
+	tool3, err := protocol.NewTool("generate_ppt", "generate PPT", generatePPTReq{})
+	if err != nil {
+		log.Fatalf("Failed to create tool: %v", err)
+		return
+	}
+	limiter.SetToolLimit(tool3.Name, pkg.Rate{Limit: 1.0, Burst: 1})
+
+	testResource := &protocol.Resource{
+		URI:      "file:///test.txt",
+		Name:     "test1.txt",
+		MimeType: "text/plain-txt",
+	}
+	testResourceContent := protocol.TextResourceContents{
+		URI:      testResource.URI,
+		MimeType: testResource.MimeType,
+		Text:     "test",
+	}
 
 	// register tool and start mcp server
-	srv.RegisterTool(tool1, currentTime)
-	srv.RegisterTool(tool2, deleteFile)
-	// srv.RegisterResource()
+	srv.RegisterTool(tool1, currentTime, server.RateLimitMiddleware(limiter))
+	srv.RegisterTool(tool2, deleteFile, server.RateLimitMiddleware(limiter))
+	srv.RegisterTool(tool3, generatePPT, server.RateLimitMiddleware(limiter))
+	srv.RegisterResource(testResource, func(context.Context, *protocol.ReadResourceRequest) (*protocol.ReadResourceResult, error) {
+		return &protocol.ReadResourceResult{
+			Contents: []protocol.ResourceContents{
+				testResourceContent,
+			},
+		}, nil
+	})
 	// srv.RegisterPrompt()
 	// srv.RegisterResourceTemplate()
 
@@ -103,26 +140,30 @@ func getTransport() (t transport.ServerTransport) {
 	return t
 }
 
-func currentTime(_ context.Context, request *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
+func currentTime(ctx context.Context, request *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	req := new(currentTimeReq)
 	if err := protocol.VerifyAndUnmarshal(request.RawArguments, &req); err != nil {
 		return nil, err
 	}
 
-	loc, err := time.LoadLocation(req.Timezone)
-	if err != nil {
-		return nil, fmt.Errorf("parse timezone with error: %v", err)
-	}
-	text := fmt.Sprintf(`current time is %s`, time.Now().In(loc))
-
-	return &protocol.CallToolResult{
-		Content: []protocol.Content{
-			&protocol.TextContent{
-				Type: "text",
-				Text: text,
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.Tick(time.Second * 1):
+		loc, err := time.LoadLocation(req.Timezone)
+		if err != nil {
+			return nil, fmt.Errorf("parse timezone with error: %v", err)
+		}
+		text := fmt.Sprintf(`current time is %s`, time.Now().In(loc))
+		return &protocol.CallToolResult{
+			Content: []protocol.Content{
+				&protocol.TextContent{
+					Type: "text",
+					Text: text,
+				},
 			},
-		},
-	}, nil
+		}, nil
+	}
 }
 
 func deleteFile(ctx context.Context, request *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
@@ -175,6 +216,30 @@ func requestConfirm(ctx context.Context) error {
 		return errors.New("respContent.Text !=true")
 	}
 	return nil
+}
+
+func generatePPT(ctx context.Context, request *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
+	req := new(generatePPTReq)
+	if err := protocol.VerifyAndUnmarshal(request.RawArguments, &req); err != nil {
+		return nil, err
+	}
+
+	for i := 1; i <= 3; i++ {
+		notify := protocol.NewProgressNotification(float64(i), 10, "generate PPT ing")
+		if err := srv.SendProgressNotification(ctx, notify); err != nil {
+			return nil, err
+		}
+		time.Sleep(time.Millisecond * 100)
+	}
+
+	return &protocol.CallToolResult{
+		Content: []protocol.Content{
+			&protocol.TextContent{
+				Type: "text",
+				Text: fmt.Sprintf("generate PPT %s successfully", "test_name"),
+			},
+		},
+	}, nil
 }
 
 func signalWaiter(errCh chan error) error {

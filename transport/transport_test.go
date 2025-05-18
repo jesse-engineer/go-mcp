@@ -19,7 +19,7 @@ func newMockSessionManager() *mockSessionManager {
 	return &mockSessionManager{}
 }
 
-func (m *mockSessionManager) CreateSession() string {
+func (m *mockSessionManager) CreateSession(context.Context) string {
 	sessionID := uuid.NewString()
 	m.Store(sessionID, nil)
 	return sessionID
@@ -94,6 +94,7 @@ func testTransport(t *testing.T, client ClientTransport, server ServerTransport)
 		expectedMsgWithServerCh <- string(msg)
 		msgCh := make(chan []byte, 1)
 		go func() {
+			defer close(msgCh)
 			msgCh <- msg
 		}()
 		return msgCh, nil

@@ -17,6 +17,11 @@ func TestGenerateSchemaFromReqStruct(t *testing.T) {
 		Number4Enum2 int     `json:"number4enum2,omitempty" enum:"1,2,3"`      // enum
 	}
 
+	type anonymousTestDataWrapper struct {
+		testData
+		ExtraField string `json:"extraField,omitempty" description:"extra string enum" enum:"a,b,c"`
+	}
+
 	type testData4InvalidInteger4Enum struct {
 		Integer4Enum int `json:"integer4enum,omitempty" enum:"a,b,c"`
 	}
@@ -119,6 +124,57 @@ func TestGenerateSchemaFromReqStruct(t *testing.T) {
 				},
 				Required: []string{"string"},
 			},
+		},
+		{
+			name: "anonymous nested struct type",
+			args: args{
+				v: anonymousTestDataWrapper{},
+			},
+			want: &InputSchema{
+				Type: Object,
+				Properties: map[string]*Property{
+					"string": {
+						Type:        String,
+						Description: "string",
+					},
+					"extraField": {
+						Type:        String,
+						Description: "extra string enum",
+						Enum:        []string{"a", "b", "c"},
+					},
+					"number": {
+						Type: Number,
+					},
+					"string4enum": {
+						Type: String,
+						Enum: []string{"a", "b", "c"},
+					},
+					"integer4enum": {
+						Type: Integer,
+						Enum: []string{"1", "2", "3"},
+					},
+					"number4enum": {
+						Type: Number,
+						Enum: []string{"1.1", "2.2", "3.3"},
+					},
+					"number4enum2": {
+						Type: Integer,
+						Enum: []string{"1", "2", "3"},
+					},
+				},
+				Required: []string{"string"},
+			},
+		},
+		{
+			name: "anonymous member collision",
+			args: args{
+				v: struct {
+					testData
+					String string `json:"string" description:"string"` // conflict with testData.string
+				}{},
+			},
+			want:    nil,
+			wantErr: true,
 		},
 		{
 			name: "invalid type for integer4Enum",

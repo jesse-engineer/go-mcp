@@ -63,6 +63,18 @@ func test(t *testing.T, runServer func() error, transportClient transport.Client
 	bytes, _ = json.Marshal(callResult)
 	fmt.Printf("Tool call result: %s\n", bytes)
 
+	progressCh := make(chan *protocol.ProgressNotification, 5)
+	callResult, err = mcpClient.CallToolWithProgressChan(context.Background(),
+		protocol.NewCallToolRequestWithRawArguments("generate_ppt", json.RawMessage(`{"ppt_description": "test"}`)), progressCh)
+	for progress := range progressCh {
+		fmt.Printf("Progress: %+v\n", progress)
+	}
+	if err != nil {
+		t.Fatalf("Failed to call tool: %v", err)
+	}
+	bytes, _ = json.Marshal(callResult)
+	fmt.Printf("Tool call result: %s\n", bytes)
+
 	if mode == transport.Stateful {
 		// if streamable_http transport, need wait streamable_http connection start
 		time.Sleep(time.Second)
